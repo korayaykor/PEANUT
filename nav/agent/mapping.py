@@ -175,5 +175,31 @@ class Semantic_Mapping(nn.Module):
         maps2 = torch.cat((maps_last.unsqueeze(1), translated.unsqueeze(1)), 1)
 
         map_pred, _ = torch.max(maps2, 1)
+
+        # ── Vote counting for majority-vote labelling ──────────────────
+        # For each map cell, count how many frames projected each category.
+        # The vote map accumulates these counts across all frames.
+        # After all frames are processed, the category with the most votes
+        # becomes the final label (done in post-processing).
+        if hasattr(agent_states, 'local_vote_map'):
+            new_sem = translated[:, 4:, :, :]   # (1, C_sem, H, W)
+            # Binary: which cells have non-zero semantic in this frame?
+            new_votes = (new_sem > 0.01).float()  # (1, C_sem, H, W)
+            agent_states.local_vote_map += new_votes[0]  # add to vote counter
+
+        # ── Cross-frame winner-takes-all for semantic channels ──────────
+        # After merging old map with new observation via max, each map cell
+        # can have multiple non-zero semantic channels (from different frames).
+        # Enforce single-category-per-pixel: for each cell, only the semantic
+        # channel with the highest value survives; all others are zeroed.
+        # This works because get_prediction() encodes mask area into the
+        # channel value — bigger mask = higher value = closest/best view wins.
+        sem = map_pred[:, 4:, :, :]           # (1, C_sem, H, W)
+        sem_max, sem_argmax = sem.max(dim=1, keepdim=True)   # (1,1,H,W)
+        # Zero out all semantic channels, then restore only the winner
+        sem_winner = torch.zeros_like(sem)
+        sem_winner.scatter_(1, sem_argmax, sem_max)
+        map_pred = torch.cat([map_pred[:, :4, :, :], sem_winner], dim=1)
+        # ────────────────────────────────────────────────────────────────
         
         return fp_map_pred[0], map_pred[0], pose_pred[0], current_poses[0]

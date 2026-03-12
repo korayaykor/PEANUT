@@ -9,7 +9,15 @@ import matplotlib.pyplot as plt
 import matplotlib
 import math
 from agent.utils.fmm_planner import FMMPlanner
-from agent.utils.segmentation import SemanticPredMaskRCNN
+from agent.utils.segmentation import SemanticPredMaskRCNN, SemanticPredYOLO
+from agent.utils.segmentation_cascade import SemanticPredCascade
+from agent.utils.segmentation_r101_coco import SemanticPredR101COCO
+try:
+    from agent.utils.segmentation_grounded_sam import SemanticPredGroundedSAM
+except ImportError:
+    SemanticPredGroundedSAM = None
+from agent.utils.segmentation_yolo11 import SemanticPredYOLO11
+from agent.utils.segmentation_yolo26 import SemanticPredYOLO26
 from constants import color_palette
 import agent.utils.pose as pu
 import agent.utils.visualization as vu
@@ -64,7 +72,21 @@ class Agent_Helper:
                                interpolation=Image.NEAREST)])
 
         # initialize semantic segmentation prediction model
-        self.seg_model = SemanticPredMaskRCNN(args)
+        seg_type = getattr(args, 'seg_model_type', 'maskrcnn')
+        if seg_type == 'yolo':
+            self.seg_model = SemanticPredYOLO(args)
+        elif seg_type == 'yolo11':
+            self.seg_model = SemanticPredYOLO11(args)
+        elif seg_type == 'yolo26':
+            self.seg_model = SemanticPredYOLO26(args)
+        elif seg_type == 'cascade':
+            self.seg_model = SemanticPredCascade(args)
+        elif seg_type == 'r101coco':
+            self.seg_model = SemanticPredR101COCO(args)
+        elif seg_type == 'grounded_sam':
+            self.seg_model = SemanticPredGroundedSAM(args)
+        else:
+            self.seg_model = SemanticPredMaskRCNN(args)
         
         # initializations for planning:
         self.selem = skimage.morphology.disk(args.col_rad)
@@ -99,7 +121,8 @@ class Agent_Helper:
         self.edge_buffer = 10 if args.num_sem_categories <= 16 else 40
 
         if args.visualize:
-            self.legend = cv2.imread('nav/new_hm3d_legend.png')[:118]
+            _nav_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            self.legend = cv2.imread(os.path.join(_nav_dir, 'new_hm3d_legend.png'))[:118]
             self.vis_image = None
             self.rgb_vis = None
 
@@ -222,6 +245,11 @@ class Agent_Helper:
             self.rgb_vis = rgb[:, :, ::-1]
 
         sem_pred, sem_vis = self.seg_model.get_prediction(rgb, depth, goal_cat=self.goal_cat)
+
+        # Store masks for visualization overlay
+        if self.args.visualize:
+            self.sem_pred_vis = sem_pred.copy()
+
         return sem_pred.astype(np.float32)
     
     
@@ -553,8 +581,90 @@ class Agent_Helper:
         sem_map_vis = sem_map_vis[:, :, [2, 1, 0]]
         sem_map_vis = cv2.resize(sem_map_vis, (480, 480),
                                  interpolation=cv2.INTER_NEAREST)
-        self.vis_image[50:530, 15:655] = self.rgb_vis
+
+        # Overlay segmentation masks on RGB observation
+        rgb_with_masks = self.rgb_vis.copy()
+        if hasattr(self, 'sem_pred_vis') and self.sem_pred_vis is not None:
+            # Colors for each category (BGR), matching map_category_names:
+            # 0:chair, 1:sofa, 2:plant, 3:bed, 4:toilet, 5:tv, 6:fireplace, 7:bathtub, 8:mirror
+            mask_colors = [
+                (0, 0, 255),     # chair - red
+                (255, 128, 0),   # sofa - blue
+                (0, 200, 0),     # plant - green
+                (255, 0, 255),   # bed - magenta
+                (0, 255, 255),   # toilet - yellow
+                (255, 255, 0),   # tv - cyan
+                (0, 128, 255),   # fireplace - orange
+                (128, 0, 255),   # bathtub - purple
+                (255, 200, 200), # mirror - light blue
+            ]
+            alpha = 0.45
+            n_cats = min(self.sem_pred_vis.shape[2] - 1, len(mask_colors))
+            for cat_i in range(n_cats):
+                mask = self.sem_pred_vis[:, :, cat_i] > 0.5
+                if np.any(mask):
+                    color = np.array(mask_colors[cat_i], dtype=np.uint8)
+                    rgb_with_masks[mask] = (
+                        (1 - alpha) * rgb_with_masks[mask] + alpha * color
+                    ).astype(np.uint8)
+                    # Draw contour around the mask
+                    contours, _ = cv2.findContours(
+                        mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                    )
+                    cv2.drawContours(rgb_with_masks, contours, -1, mask_colors[cat_i], 2)
+
+                    # Write object name on the mask
+                    cat_names = ['chair','sofa','plant','bed','toilet',
+                                 'tv_monitor','fireplace','bathtub','mirror']
+                    if cat_i < len(cat_names):
+                        # Find the center of the largest contour for label placement
+                        largest = max(contours, key=cv2.contourArea)
+                        M = cv2.moments(largest)
+                        if M['m00'] > 0:
+                            cx = int(M['m10'] / M['m00'])
+                            cy = int(M['m01'] / M['m00'])
+                        else:
+                            x, y, w, h = cv2.boundingRect(largest)
+                            cx, cy = x + w // 2, y + h // 2
+                        label = cat_names[cat_i]
+                        font = cv2.FONT_HERSHEY_SIMPLEX
+                        font_scale = 0.5
+                        thickness = 1
+                        (tw, th), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+                        # Background rectangle for readability
+                        cv2.rectangle(rgb_with_masks,
+                                      (cx - tw // 2 - 2, cy - th - 4),
+                                      (cx + tw // 2 + 2, cy + 2),
+                                      mask_colors[cat_i], -1)
+                        cv2.putText(rgb_with_masks, label,
+                                    (cx - tw // 2, cy - 2),
+                                    font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+
+        self.vis_image[50:530, 15:655] = rgb_with_masks
         self.vis_image[50:530, 670:1150] = sem_map_vis
+
+        if getattr(self.args, 'seg_model_type', '') == 'grounded_sam':
+            open_vocab_labels = getattr(self.seg_model, 'last_detected_labels', [])
+            panel_x0, panel_y0 = 22, 58
+            panel_w, panel_h = 250, 190
+            overlay = self.vis_image.copy()
+            cv2.rectangle(overlay, (panel_x0, panel_y0), (panel_x0 + panel_w, panel_y0 + panel_h), (245, 245, 245), -1)
+            cv2.rectangle(overlay, (panel_x0, panel_y0), (panel_x0 + panel_w, panel_y0 + panel_h), (100, 100, 100), 1)
+            alpha_panel = 0.85
+            self.vis_image = cv2.addWeighted(overlay, alpha_panel, self.vis_image, 1 - alpha_panel, 0)
+
+            cv2.putText(self.vis_image, 'Open-vocab labels', (panel_x0 + 8, panel_y0 + 18),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.50, (30, 30, 30), 1, cv2.LINE_AA)
+
+            label_y = panel_y0 + 40
+            if open_vocab_labels:
+                for line in open_vocab_labels[:7]:
+                    cv2.putText(self.vis_image, line[:42], (panel_x0 + 8, label_y),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.42, (20, 20, 20), 1, cv2.LINE_AA)
+                    label_y += 21
+            else:
+                cv2.putText(self.vis_image, '(none)', (panel_x0 + 8, label_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (60, 60, 60), 1, cv2.LINE_AA)
         
                         
         right_panel = self.vis_image[:, -250:] 

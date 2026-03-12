@@ -1,4 +1,5 @@
 import argparse
+import os
 import torch
 
 
@@ -18,20 +19,78 @@ def get_args():
                         help='start episode for data collection')
     parser.add_argument('--end_ep', type=int, default=-1,
                         help='end episode for data collection')
+    parser.add_argument('--target_category', type=str, default='sofa',
+                        help='target category for single-category evaluation')
 
-    parser.add_argument('-v', '--visualize', type=int, default=0,
+    parser.add_argument('-v', '--visualize', type=int, default=2,
                         help="""1: Show visualization on screen
                                 2: Dump visualizations as image files
                                 (default: 0)""")
-    parser.add_argument('--exp_name', type=str, default="exp1",
+    parser.add_argument('--exp_name', type=str, default="yolo_seg",
                         help='experiment name (default: exp1)')
     parser.add_argument('-d', '--dump_location', type=str, default="./data/tmp/",
                         help='path to dump models and log (default: ./data/tmp/)')
     
     # Segmentation model
-    parser.add_argument('--seg_model_wts', type=str, default='nav/agent/utils/mask_rcnn_R_101_cat9.pth',
-                        help='path to segmentation model')
+    parser.add_argument('--seg_model_type', type=str, default='yolo',
+                        choices=['maskrcnn', 'maskrcnn_pretrained', 'yolo', 'yolo11', 'yolo26', 'cascade', 'r101coco', 'grounded_sam'],
+                        help='segmentation model type: maskrcnn, maskrcnn_pretrained, yolo, yolo11, yolo26, cascade, r101coco, or grounded_sam')
+    _nav_dir = os.path.dirname(os.path.abspath(__file__))
+    parser.add_argument('--seg_model_wts', type=str,
+                        default=os.path.join(_nav_dir, 'agent', 'utils', 'mask_rcnn_R_101_cat9.pth'),
+                        help='path to segmentation model weights '
+                             '(for yolo: e.g. yolov8x-seg.pt or path to custom weights)')
+    parser.add_argument('--yolo_conf', type=float, default=0.15,
+                        help='YOLO confidence threshold for detections '
+                             '(lower than sem_pred_prob_thr because YOLO scores '
+                             'are much lower on synthetic Habitat images, default: 0.15)')
+    parser.add_argument('--yolo_goal_conf', type=float, default=0.5,
+                        help='YOLO confidence threshold for goal category '
+                             '(default: 0.25)')
+    parser.add_argument('--grounded_box_thresh', type=float, default=0.15,
+                        help='GroundingDINO box threshold for grounded_sam')
+    parser.add_argument('--grounded_text_thresh', type=float, default=0.15,
+                        help='GroundingDINO text threshold for grounded_sam')
+    parser.add_argument('--grounded_conf', type=float, default=0.15,
+                        help='Minimum detection confidence accepted by grounded_sam')
+    parser.add_argument('--grounded_goal_conf', type=float, default=0.15,
+                        help='Minimum detection confidence for goal category in grounded_sam')
+    parser.add_argument('--grounded_aux_conf', type=float, default=0.45,
+                        help='Minimum confidence for auxiliary categories (fireplace/bathtub/mirror) in grounded_sam')
+    parser.add_argument('--grounded_chair_sofa_conf', type=float, default=0.20,
+                        help='Minimum confidence for focused chair/sofa disambiguation prompts in grounded_sam')
+    parser.add_argument('--grounded_open_vocab_prompt', type=str,
+                        default='chair . sofa . couch . plant . potted plant . bed . toilet . tv monitor . television . fireplace . dining table . bathtub . oven . mirror . sink .',
+                        help='Open-vocabulary prompt string for grounded_sam')
+    parser.add_argument('--grounded_config_path', type=str,
+                        default='/nav/agent/utils/grounded_sam_weights/GroundingDINO_SwinT_OGC.py',
+                        help='GroundingDINO config path for grounded_sam')
+    parser.add_argument('--grounded_checkpoint', type=str,
+                        default='/nav/agent/utils/grounded_sam_weights/groundingdino_swint_ogc.pth',
+                        help='GroundingDINO checkpoint path for grounded_sam')
+    parser.add_argument('--sam_model_type', type=str, default='vit_b',
+                        choices=['vit_h', 'vit_l', 'vit_b'],
+                        help='SAM model type for grounded_sam')
+    parser.add_argument('--sam_checkpoint', type=str,
+                        default='/nav/agent/utils/grounded_sam_weights/sam_vit_b_01ec64.pth',
+                        help='SAM checkpoint path for grounded_sam')
     
+    # YOLOv11-seg arguments
+    parser.add_argument('--yolo11_model_path', type=str, default='yolo11x-seg.pt',
+                        help='YOLOv11-seg model path (e.g. yolo11n-seg.pt, yolo11x-seg.pt, or custom weights)')
+    parser.add_argument('--yolo11_conf', type=float, default=0.15,
+                        help='YOLOv11 confidence threshold for detections (default: 0.15)')
+    parser.add_argument('--yolo11_goal_conf', type=float, default=0.25,
+                        help='YOLOv11 confidence threshold for goal category (default: 0.25)')
+
+    # YOLO26-seg arguments
+    parser.add_argument('--yolo26_model_path', type=str, default='yolo26x-seg.pt',
+                        help='YOLO26-seg model path (e.g. yolo26n-seg.pt, yolo26x-seg.pt, or custom weights)')
+    parser.add_argument('--yolo26_conf', type=float, default=0.08,
+                        help='YOLO26 confidence threshold for detections (default: 0.08)')
+    parser.add_argument('--yolo26_goal_conf', type=float, default=0.15,
+                        help='YOLO26 confidence threshold for goal category (default: 0.15)')
+
     # Prediction model
     parser.add_argument('--pred_model_wts', type=str, default="./nav/pred_model_wts.pth",
                         help='path to prediction model weights')
@@ -108,7 +167,7 @@ def get_args():
     
     # For data collection 
     parser.add_argument('--use_gt_seg', type = int, default = 0)
-    parser.add_argument('--only_explore', type = int, default = 0)
+    parser.add_argument('--only_explore', type = int, default = 1)
 
     # parse arguments
     args = parser.parse_args()

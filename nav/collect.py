@@ -5,11 +5,13 @@ import habitat
 import torch
 import sys
 import cv2
+import time
 from arguments import get_args
 from habitat.core.env import Env
 from constants import hm3d_names
 import numpy as np
 import matplotlib.pyplot as plt
+import json
 
 from agent.peanut_agent import PEANUT_Agent
 
@@ -33,6 +35,11 @@ def main():
     nav_agent = PEANUT_Agent(args=args,task_config=config)
     print(config.DATASET.SPLIT, 'split')
     print(len(hab_env.episodes), 'episodes in dataset')
+    # prepare results file in dump location
+    os.makedirs(args.dump_location, exist_ok=True)
+    results_file = os.path.join(args.dump_location, f"{args.exp_name}_results.txt")
+    # ensure file exists
+    open(results_file, 'a').close()
     
     num_episodes = 500
     start = args.start_ep
@@ -49,10 +56,13 @@ def main():
         
         if ep_i >= start and ep_i < end:
             print('Episode %d | Target: %s' % (ep_i, hm3d_names[observations['objectgoal'][0]]))
+            target_name = hm3d_names[observations['objectgoal'][0]]
+            print('Episode %d | Target: %s' % (ep_i, target_name))
             print('Scene: %s' % hab_env._current_episode.scene_id)
 
             step_i = 0
             seq_i = 0
+            ep_start_time = time.time()
             
             while not hab_env.episode_over:
                 action = nav_agent.act(observations)
@@ -66,11 +76,32 @@ def main():
                     
             if args.only_explore == 0:
                 
-                print('ended at step %d' % step_i)
+                ep_elapsed_time = time.time() - ep_start_time
+                print('ended at step %d (%.2fs)' % (step_i, ep_elapsed_time))
                 
                 # Navigation metrics
                 metrics = hab_env.get_metrics()
                 print(metrics)
+                # Append per-episode metrics to results file (one JSON object per line)
+                record = {
+                    'episode': ep_i,
+                    'scene_id': hab_env._current_episode.scene_id,
+                    'target': target_name,
+                    'episode_length': step_i,
+                    'time': ep_elapsed_time,
+                }
+                # merge metrics into record (metrics may contain nested values)
+                try:
+                    record.update(metrics)
+                except Exception:
+                    # fallback: stringify metrics
+                    record['metrics'] = str(metrics)
+
+                try:
+                    with open(results_file, 'a') as _f:
+                        _f.write(json.dumps(record) + "\n")
+                except Exception as e:
+                    print(f"Failed to write metrics to {results_file}: {e}")
                 
                 # Log the metrics (save them however you want)
                 sucs.append(metrics['success'])

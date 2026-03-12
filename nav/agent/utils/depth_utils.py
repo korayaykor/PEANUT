@@ -137,8 +137,15 @@ def get_point_cloud_from_z_t(Y_t, camera_matrix, device, scale=1):
         Z is positive up in the image
         XYZ is ...xHxWx3
     """
-    grid_x, grid_z = torch.meshgrid(torch.arange(Y_t.shape[-1]),
-                                    torch.arange(Y_t.shape[-2] - 1, -1, -1))
+    # Use 'ij' indexing so output shapes match the original code's expectations
+    # (the code transposes the meshgrid outputs afterwards). This avoids the
+    # deprecation warning while preserving the original ordering used by the
+    # subsequent transpose operations.
+    grid_x, grid_z = torch.meshgrid(
+        torch.arange(Y_t.shape[-1]),
+        torch.arange(Y_t.shape[-2] - 1, -1, -1),
+        indexing='ij'
+    )
     grid_x = grid_x.transpose(1, 0).to(device)
     grid_z = grid_z.transpose(1, 0).to(device)
     grid_x = grid_x.unsqueeze(0).expand(Y_t.size())

@@ -1,6 +1,17 @@
 data/
 habitat-challenge-data/
-*.pth 
+nav/data/
+nav/vlmaps_data/
+5LpN3gDmAk7_1/
+*.pth
+*.pt
+*.onnx
+*.bin
+*.safetensors
+*.h5df
+nav/test_rgb.png
+nav/test_rgb2.png
+nav/habitat-challenge-data
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

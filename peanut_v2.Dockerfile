@@ -43,6 +43,21 @@ RUN conda install -n habitat -c aihabitat -c conda-forge \
     'habitat-sim=0.2.1=py3.8_headless_bullet_linux_fc7fb11ccec407753a73ab810d1dbb5f57d0f9b9' \
     -y
 
+# Fix: conda's EGL/GLdispatch libraries don't support NVIDIA GPU rendering.
+# Replace them with system libraries that include NVIDIA EGL ICD support.
+RUN cd /opt/conda/envs/habitat/lib && \
+    mv libEGL.so.1 libEGL.so.1.conda.bak 2>/dev/null || true && \
+    mv libEGL.so.1.1.0 libEGL.so.1.1.0.conda.bak 2>/dev/null || true && \
+    mv libGLdispatch.so.0 libGLdispatch.so.0.conda.bak 2>/dev/null || true && \
+    mv libGLdispatch.so.0.0.0 libGLdispatch.so.0.0.0.conda.bak 2>/dev/null || true && \
+    ln -sf /usr/lib/x86_64-linux-gnu/libEGL.so.1 libEGL.so.1 && \
+    ln -sf /usr/lib/x86_64-linux-gnu/libEGL.so.1.1.0 libEGL.so.1.1.0 && \
+    ln -sf /usr/lib/x86_64-linux-gnu/libGLdispatch.so.0 libGLdispatch.so.0
+
+# Create NVIDIA EGL vendor config for headless GPU rendering
+RUN mkdir -p /usr/share/glvnd/egl_vendor.d && \
+    echo '{"file_format_version":"1.0.0","ICD":{"library_path":"libEGL_nvidia.so.0"}}' > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+
 # Install PyTorch 2.1 with CUDA 11.8
 RUN conda run -n habitat pip install \
     torch==2.1.2+cu118 \

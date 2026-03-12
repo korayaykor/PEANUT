@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-DOCKER_NAME="peanut"
+DOCKER_NAME="koray_peanut"
 
 DOCKER_BUILDKIT=1 docker build . --build-arg INCUBATOR_VER=$(date +%Y%m%d-%H%M%S) --file peanut.Dockerfile -t ${DOCKER_NAME}
 

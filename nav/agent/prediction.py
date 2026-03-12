@@ -146,7 +146,11 @@ class PEANUT_Prediction_Model():
         cfg = Config.fromfile(args.pred_model_cfg)
 
         # build the model from a config file and a checkpoint file
-        self.model = init_segmentor(cfg, checkpoint=ckpt, device=('cuda:'+ str(args.sem_gpu_id)) if args else 'cuda:0')
+        # choose device: use CUDA if a valid sem_gpu_id >= 0 is provided, otherwise fall back to CPU
+        device_str = 'cpu'
+        if args and getattr(args, 'sem_gpu_id', None) is not None and int(args.sem_gpu_id) >= 0:
+            device_str = f'cuda:{int(args.sem_gpu_id)}'
+        self.model = init_segmentor(cfg, checkpoint=ckpt, device=device_str)
         self.model.eval()
 
         self.model.cfg = cfg

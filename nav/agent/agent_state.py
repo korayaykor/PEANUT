@@ -12,7 +12,11 @@ import skimage.morphology
 from numpy import ma
 
 from agent.mapping import Semantic_Mapping
-from agent.prediction import PEANUT_Prediction_Model
+try:
+    from agent.prediction import PEANUT_Prediction_Model
+except ImportError:
+    PEANUT_Prediction_Model = None
+    import warnings; warnings.warn("PEANUT_Prediction_Model not available (mmcv missing). Using only_explore mode.")
 from arguments import get_args
 
 
@@ -80,7 +84,10 @@ class Agent_State:
         self.global_goal_preset_id = 0
 
         # Unseen Target Prediction
-        self.prediction_model = PEANUT_Prediction_Model(args) if args.only_explore == 0 else None 
+        if args.only_explore == 0 and PEANUT_Prediction_Model is not None:
+            self.prediction_model = PEANUT_Prediction_Model(args)
+        else:
+            self.prediction_model = None
         self.selem = skimage.morphology.disk(args.col_rad)
         self.selem_idx = np.where(skimage.morphology.disk(args.col_rad + 1) > 0)
         self.target_pred = None
@@ -241,8 +248,9 @@ class Agent_State:
             self.step == 0 or
             self.dist_to_goal < args.goal_reached_dist) and self.step >= args.switch_step:
             
-            self.update_prediction()
-            self.update_global_goal()
+            if self.prediction_model is not None:
+                self.update_prediction()
+                self.update_global_goal()
        
         self.update_goal_map(infos)
                     
@@ -425,7 +433,7 @@ class Agent_State:
         self.goal_map[self.global_goals[0][0], self.global_goals[0][1]] = 1
 
         # Update long-term goal if target object is found
-        if self.args.only_explore == 0:
+        if True:  # Goal detection always active (only_explore only skips prediction model)
             cn = self.goal_cat + 4
             if self.local_map[cn, :, :].sum() != 0.:
                 cat_semantic_map = self.local_map[cn, :, :].cpu().numpy()

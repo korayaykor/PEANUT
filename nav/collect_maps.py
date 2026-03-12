@@ -84,7 +84,10 @@ def main():
                     
                 
             if np.sum(full_map_seq[:, 4:]) > 0 and np.sum(full_map_seq[:, 1]) > 4000:
-                np.savez_compressed('./data/saved_maps/%s_80/f%05d.npz' % (config.DATASET.SPLIT, count_episodes), maps=full_map_seq)
+                save_dir = os.path.join(os.path.dirname(__file__), '..', 'data', 'saved_maps', f'{config.DATASET.SPLIT}_80')
+                os.makedirs(save_dir, exist_ok=True)
+                save_path = os.path.join(save_dir, f'f{count_episodes:05d}.npz')
+                np.savez_compressed(save_path, maps=full_map_seq)
 
         count_episodes += 1
         
