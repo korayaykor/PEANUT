@@ -79,23 +79,45 @@ OUTDOOR_FP_NAMES = {
 OUTDOOR_FP_INDICES = {i for i, name in enumerate(COCO_80_NAMES) if name in OUTDOOR_FP_NAMES}
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Generate 80 distinct colors for visualization
+#  Fixed 80-color palette for COCO categories (consistent across all models)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _generate_80_colors():
-    """Generate 80 visually distinct colors using HSV spacing."""
-    import colorsys
-    colors = []
-    n = 80
-    for i in range(n):
-        hue = (i * 0.618033988749895) % 1.0  # golden ratio spacing
-        sat = 0.65 + 0.35 * ((i % 3) / 2.0)
-        val = 0.75 + 0.25 * ((i % 5) / 4.0)
-        r, g, b = colorsys.hsv_to_rgb(hue, sat, val)
-        colors.append((r, g, b))
-    return colors
-
-COCO80_COLORS = _generate_80_colors()
+# Each COCO class index (0-79) has a fixed (R, G, B) color in 0-1 range.
+# These never change so legends are identical across models and runs.
+COCO80_COLORS = [
+    # 0  person          1  bicycle          2  car              3  motorcycle       4  airplane
+    (0.89, 0.10, 0.11), (0.22, 0.49, 0.72), (0.30, 0.69, 0.29), (0.60, 0.31, 0.64), (1.00, 0.50, 0.00),
+    # 5  bus             6  train            7  truck            8  boat             9  traffic light
+    (1.00, 1.00, 0.20), (0.65, 0.34, 0.16), (0.97, 0.51, 0.75), (0.60, 0.60, 0.60), (0.00, 0.75, 0.75),
+    # 10 fire hydrant    11 stop sign        12 parking meter    13 bench            14 bird
+    (0.90, 0.00, 0.00), (0.50, 0.00, 0.00), (0.00, 0.50, 0.00), (0.55, 0.71, 0.00), (0.00, 0.60, 0.80),
+    # 15 cat             16 dog              17 horse            18 sheep            19 cow
+    (0.90, 0.56, 0.00), (0.63, 0.32, 0.18), (0.75, 0.75, 0.00), (0.50, 0.80, 0.50), (0.40, 0.20, 0.10),
+    # 20 elephant        21 bear             22 zebra            23 giraffe          24 backpack
+    (0.50, 0.50, 0.50), (0.44, 0.18, 0.00), (0.00, 0.00, 0.00), (0.80, 0.60, 0.00), (0.30, 0.30, 0.80),
+    # 25 umbrella        26 handbag          27 tie              28 suitcase         29 frisbee
+    (0.50, 0.00, 0.50), (0.70, 0.40, 0.40), (0.20, 0.20, 0.60), (0.44, 0.50, 0.56), (0.10, 0.80, 0.10),
+    # 30 skis            31 snowboard        32 sports ball      33 kite             34 baseball bat
+    (0.00, 0.40, 0.60), (0.40, 0.60, 0.80), (0.80, 0.80, 0.00), (0.60, 0.00, 0.60), (0.50, 0.40, 0.30),
+    # 35 baseball glove  36 skateboard       37 surfboard        38 tennis racket    39 bottle
+    (0.80, 0.40, 0.00), (0.00, 0.60, 0.40), (0.00, 0.80, 0.80), (0.60, 0.80, 0.20), (0.40, 0.70, 0.30),
+    # 40 wine glass      41 cup              42 fork             43 knife            44 spoon
+    (0.60, 0.20, 0.40), (0.85, 0.55, 0.20), (0.50, 0.50, 0.00), (0.70, 0.70, 0.70), (0.80, 0.60, 0.40),
+    # 45 bowl            46 banana           47 apple            48 sandwich         49 orange
+    (0.30, 0.50, 0.70), (1.00, 0.90, 0.20), (0.70, 0.10, 0.10), (0.85, 0.75, 0.50), (1.00, 0.60, 0.00),
+    # 50 broccoli        51 carrot           52 hot dog          53 pizza            54 donut
+    (0.20, 0.60, 0.20), (0.90, 0.50, 0.10), (0.80, 0.30, 0.20), (0.90, 0.70, 0.10), (0.85, 0.45, 0.55),
+    # 55 cake            56 chair            57 couch            58 potted plant     59 bed
+    (0.95, 0.80, 0.70), (0.96, 0.36, 0.26), (0.12, 0.47, 0.71), (0.20, 0.80, 0.20), (0.94, 0.78, 0.66),
+    # 60 dining table    61 toilet           62 tv               63 laptop           64 mouse
+    (0.94, 0.50, 0.16), (0.94, 0.89, 0.26), (0.66, 0.94, 0.85), (0.30, 0.30, 0.90), (0.80, 0.80, 0.80),
+    # 65 remote          66 keyboard         67 cell phone       68 microwave        69 oven
+    (0.55, 0.55, 0.00), (0.35, 0.35, 0.65), (0.10, 0.50, 0.50), (0.60, 0.40, 0.70), (0.50, 0.00, 0.80),
+    # 70 toaster         71 sink             72 refrigerator     73 book             74 clock
+    (0.80, 0.50, 0.30), (0.80, 0.80, 1.00), (0.40, 0.80, 0.90), (0.60, 0.50, 0.30), (0.00, 0.70, 0.30),
+    # 75 vase            76 scissors         77 teddy bear       78 hair drier       79 toothbrush
+    (0.70, 0.30, 0.60), (0.40, 0.40, 0.40), (0.75, 0.55, 0.35), (0.85, 0.70, 0.85), (0.20, 0.70, 0.70),
+]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -834,7 +856,7 @@ def run_coco80_replay(scene_dir, target_object, peanut_args, num_frames=None, fr
     # Map
     ax_map = fig.add_subplot(gs[0])
     ax_map.imshow(canvas, interpolation='nearest')
-    ax_map.set_title(f"PEANUT Semantic Map — {scene_name}\n"
+    ax_map.set_title(f"Semantic Map — {scene_name}\n"
                      f"{seg_type.upper()} | {len(frame_indices)} frames | "
                      f"Majority-vote + 5×5 spatial | {n_detected} detected | {total_sem:,} cells",
                      fontsize=13, fontweight='bold')

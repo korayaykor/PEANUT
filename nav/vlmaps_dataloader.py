@@ -379,17 +379,20 @@ def run_offline_replay(scene_dir, target_object, num_frames=None,
     # ── Build a colorized semantic map image ──
     h, w = sem_crop.shape[1], sem_crop.shape[2]
 
-    # Category colors (RGB, 0-1)
+    # Category colors (RGB, 0-1) — matched to COCO80 palette via COCO indices
+    # so the same object always has the same color across 9-cat and 80-cat views.
+    # Mapping: 0=chair(56), 1=sofa(57), 2=plant(58), 3=bed(59), 4=toilet(61),
+    #          5=tv(62), 6=dining_table(60), 7=oven(69), 8=sink(71), 9=other
     cat_colors = [
-        (0.96, 0.36, 0.26),   # 0: chair       — red
-        (0.12, 0.47, 0.71),   # 1: sofa        — blue
-        (0.20, 0.80, 0.20),   # 2: plant       — green
-        (0.94, 0.78, 0.66),   # 3: bed         — tan
-        (0.94, 0.89, 0.26),   # 4: toilet      — yellow
-        (0.66, 0.94, 0.85),   # 5: tv_monitor  — cyan
-        (0.94, 0.50, 0.16),   # 6: fireplace   — orange
-        (0.50, 0.00, 0.80),   # 7: bathtub     — purple
-        (0.80, 0.80, 1.00),   # 8: mirror      — lavender
+        (0.96, 0.36, 0.26),   # 0: chair       — COCO 56
+        (0.12, 0.47, 0.71),   # 1: sofa        — COCO 57
+        (0.20, 0.80, 0.20),   # 2: plant       — COCO 58
+        (0.94, 0.78, 0.66),   # 3: bed         — COCO 59
+        (0.94, 0.89, 0.26),   # 4: toilet      — COCO 61
+        (0.66, 0.94, 0.85),   # 5: tv_monitor  — COCO 62
+        (0.94, 0.50, 0.16),   # 6: fireplace   — COCO 60 (dining table)
+        (0.50, 0.00, 0.80),   # 7: bathtub     — COCO 69 (oven)
+        (0.80, 0.80, 1.00),   # 8: mirror      — COCO 71 (sink)
         (0.60, 0.60, 0.60),   # 9: other       — gray
     ]
 
@@ -419,7 +422,7 @@ def run_offline_replay(scene_dir, target_object, num_frames=None,
     # ── Save with matplotlib (includes legend) ──
     fig, ax = plt.subplots(1, 1, figsize=(12, 12))
     ax.imshow(canvas, interpolation='nearest')
-    ax.set_title(f"PEANUT Semantic Map — {scene_name}\n"
+    ax.set_title(f"Semantic Map — {scene_name}\n"
                  f"({len(frame_indices)} frames, {peanut_args.seg_model_type} seg, "
                  f"res={peanut_args.map_resolution}cm/px)",
                  fontsize=14, fontweight='bold')
@@ -449,7 +452,7 @@ def run_offline_replay(scene_dir, target_object, num_frames=None,
     scene_npy = os.path.join(scene_dir, f"peanut_semantic_map_{peanut_args.seg_model_type}.npy")
     fig2, ax2 = plt.subplots(1, 1, figsize=(12, 12))
     ax2.imshow(canvas, interpolation='nearest')
-    ax2.set_title(f"PEANUT Semantic Map — {scene_name}\n"
+    ax2.set_title(f"Semantic Map — {scene_name}\n"
                   f"{peanut_args.seg_model_type} | {len(frame_indices)} frames",
                   fontsize=14, fontweight='bold')
     struct_legend2 = [

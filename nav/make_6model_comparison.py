@@ -35,7 +35,7 @@ def main():
     """Load 6 model semantic map PNGs and arrange them in a 2x3 comparison figure."""
     fig = plt.figure(figsize=(36, 24))
     fig.suptitle(
-        "PEANUT Semantic Map — 6 Model Comparison\n"
+        "Semantic Map — 6 Model Comparison\n"
         "Scene: 5LpN3gDmAk7_1 | 1159 frames | Majority-vote + 5×5 spatial smoothing",
         fontsize=20, fontweight='bold', y=0.98
     )
