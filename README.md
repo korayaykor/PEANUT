@@ -1,17 +1,4 @@
-# PEANUT: Predicting and Navigating to Unseen Targets
-
-[Albert J. Zhai](https://ajzhai.github.io/), [Shenlong Wang](https://shenlong.web.illinois.edu/)<br/>
-University of Illinois at Urbana-Champaign
-
-ICCV 2023
-
-[Paper](https://arxiv.org/abs/2212.02497) │ [Project Page](https://ajzhai.github.io/PEANUT/)
-
-![Example Video](docs/example_vid.gif)
-
-## Overview
-
-PEANUT is an embodied AI agent for **Object Goal Navigation (ObjectNav)** in indoor environments. Given a target object category (e.g., "bed", "toilet", "tv"), the agent navigates through an unseen 3D environment to find and reach an instance of that object.
+This agent is an embodied AI agent for **Object Goal Navigation (ObjectNav)** in indoor environments. Given a target object category (e.g., "bed", "toilet", "tv"), the agent navigates through an unseen 3D environment to find and reach an instance of that object.
 
 The agent operates as a modular pipeline:
 
