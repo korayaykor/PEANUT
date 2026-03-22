@@ -716,7 +716,48 @@ class Agent_Helper:
                  int(color_palette[10] * 255),
                  int(color_palette[9] * 255))
         cv2.drawContours(self.vis_image, [agent_arrow], 0, color, -1) 
-        
+
+        # --- Category legend below the semantic map ---
+        legend_y0 = 540  # start row for legend
+        legend_x0 = 670  # align with semantic map left edge
+        # Map element legends (trajectory, goal, obstacle, explored)
+        # color_palette is flat R,G,B but vis_image is BGR, so swap R<->B
+        map_elements = [
+            ('Trajectory', (int(color_palette[11]*255), int(color_palette[10]*255), int(color_palette[9]*255))),
+            ('Goal', (int(color_palette[14]*255), int(color_palette[13]*255), int(color_palette[12]*255))),
+            ('Obstacle', (153, 153, 153)),
+            ('Explored', (230, 230, 230)),
+        ]
+        # Semantic category legends
+        cat_names_legend = ['Chair', 'Sofa', 'Plant', 'Bed', 'Toilet',
+                            'TV', 'Fireplace', 'Bathtub', 'Mirror']
+        cat_colors_legend = []
+        for ci in range(9):
+            idx = (5 + ci) * 3  # color_palette offset: categories start at index 5
+            r = int(color_palette[idx] * 255)
+            g = int(color_palette[idx + 1] * 255)
+            b = int(color_palette[idx + 2] * 255)
+            cat_colors_legend.append((b, g, r))  # BGR for cv2
+
+        all_items = map_elements + list(zip(cat_names_legend, cat_colors_legend))
+        font_leg = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale_leg = 0.42
+        thick_leg = 1
+        box_sz = 12
+        col_width = 120
+        items_per_row = 4
+        for i, (name, clr) in enumerate(all_items):
+            row = i // items_per_row
+            col = i % items_per_row
+            x = legend_x0 + col * col_width
+            y = legend_y0 + row * 22
+            # Draw color box
+            cv2.rectangle(self.vis_image, (x, y), (x + box_sz, y + box_sz), clr, -1)
+            cv2.rectangle(self.vis_image, (x, y), (x + box_sz, y + box_sz), (80, 80, 80), 1)
+            # Draw label
+            cv2.putText(self.vis_image, name, (x + box_sz + 4, y + box_sz - 1),
+                        font_leg, font_scale_leg, (30, 30, 30), thick_leg, cv2.LINE_AA)
+
         if args.visualize == 1:
             # Displaying the image
             cv2.imshow("Thread {}".format(self.rank), self.vis_image)

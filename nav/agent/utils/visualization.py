@@ -25,7 +25,7 @@ def draw_line(start, end, mat, steps=25, w=1):
 
 
 def init_vis_image(goal_name, legend):
-    vis_image = np.ones((600, 1165 + 250, 3)).astype(np.uint8) * 255
+    vis_image = np.ones((710, 1165 + 250, 3)).astype(np.uint8) * 255
     font = cv2.FONT_HERSHEY_DUPLEX
     fontScale = 1
     color = (20, 20, 20)  # BGR

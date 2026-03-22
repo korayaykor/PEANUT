@@ -7,9 +7,25 @@ its own map channel so the semantic map shows every detected object type.
 
 Usage (inside container):
   cd /nav
+
+  # Single scene:
   python vlmaps_dataloader_coco80.py \
       --scene_dir /nav/vlmaps_data/5LpN3gDmAk7_1 \
       --target_object chair \
+      --seg_model_type yolo \
+      --visualize 2 --only_explore 1 \
+      -d /nav/data/tmp_coco80_yolo/
+
+  # All 10 scenes:
+  python vlmaps_dataloader_coco80.py \
+      --scene_dir all \
+      --seg_model_type yolo \
+      --visualize 2 --only_explore 1 \
+      -d /nav/data/tmp_coco80_yolo/
+
+  # Specific scenes (comma-separated):
+  python vlmaps_dataloader_coco80.py \
+      --scene_dir "5LpN3gDmAk7_1,JmbYfDe2QKZ_1,ur6pFq6Qu1A_1" \
       --seg_model_type yolo \
       --visualize 2 --only_explore 1 \
       -d /nav/data/tmp_coco80_yolo/
@@ -77,6 +93,11 @@ OUTDOOR_FP_NAMES = {
     "parking meter", "traffic light",
 }
 OUTDOOR_FP_INDICES = {i for i, name in enumerate(COCO_80_NAMES) if name in OUTDOOR_FP_NAMES}
+
+# The 9 MaskRCNN categories used in PEANUT (COCO indices)
+MASKRCNN_COCO_INDICES = {56, 57, 58, 59, 60, 61, 62, 69, 71}
+#  chair(56), couch(57), potted_plant(58), bed(59), dining_table(60),
+#  toilet(61), tv(62), oven(69), sink(71)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Fixed 80-color palette for COCO categories (consistent across all models)
@@ -536,17 +557,16 @@ ACTION_NAMES = {0: "STOP", 1: "MOVE_FORWARD", 2: "TURN_LEFT", 3: "TURN_RIGHT"}
 #  Main offline replay with 80 COCO categories
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_coco80_replay(scene_dir, target_object, peanut_args, num_frames=None, frame_step=1, filter_outdoor=False, min_votes=3):
+def run_coco80_replay(scene_dir, peanut_args, num_frames=None, frame_step=1, filter_outdoor=False, min_votes=3, maskrcnn_cats_only=True):
     """Replay pre-recorded frames with ALL 80 COCO categories in the semantic map.
 
     Processes each frame through the chosen segmentation model (YOLO/MaskRCNN/Cascade),
-    applies biggest-mask-wins per frame, cross-frame majority voting, 5×5 spatial mode
-    smoothing, optional outdoor false-positive filtering, and min-votes thresholding.
+    applies biggest-mask-wins per frame, argmax + 5×5 spatial mode smoothing.
+    Runs in explore-only mode (no target object needed).
     Saves final semantic map as .npy and .png.
 
     Args:
         scene_dir:       Path to VLMaps scene folder with rgb/, depth/, poses.txt.
-        target_object:   HM3D goal object name (e.g. 'chair').
         peanut_args:     PEANUT argument namespace from arguments.py.
         num_frames:      Max frames to process (None = all).
         frame_step:      Process every N-th frame.
@@ -554,18 +574,16 @@ def run_coco80_replay(scene_dir, target_object, peanut_args, num_frames=None, fr
         min_votes:       Minimum cross-frame votes to keep a cell label (default 3).
     """
 
-    name_to_id = {v: k for k, v in hm3d_names.items()}
-    if target_object not in name_to_id:
-        raise ValueError(f"Unknown target '{target_object}'. Choose from {list(name_to_id.keys())}")
-    objectgoal_id = name_to_id[target_object]
+    # Explore-only: no real target needed, use dummy objectgoal_id=0
+    objectgoal_id = 0
 
     print(f"\n{'='*60}")
-    print(f"  COCO-80 Replay | Target: {target_object} (id={objectgoal_id})")
+    print(f"  COCO-80 Replay | Explore-only (no target)")
     print(f"  Seg model: {peanut_args.seg_model_type}")
     print(f"{'='*60}\n")
 
     loader = VLMapsSceneLoader(scene_dir)
-    total = loader.num_frames if num_frames is None else min(loader.num_frames, num_frames)
+    total = loader.num_frames if (num_frames is None or num_frames < 0) else min(loader.num_frames, num_frames)
     frame_indices = list(range(0, total, frame_step))
 
     # ── Override args for 80 categories ──
@@ -589,10 +607,18 @@ def run_coco80_replay(scene_dir, target_object, peanut_args, num_frames=None, fr
         peanut_args._coco80_model_path = model_path
         peanut_args._coco80_conf = getattr(peanut_args, 'yolo_conf', 0.15)
     elif seg_type == 'yolo11':
-        peanut_args._coco80_model_path = getattr(peanut_args, 'yolo11_model_path', 'yolo11x-seg.pt')
+        model_path = peanut_args.seg_model_wts
+        if not model_path.endswith('.pt'):
+            model_path = os.path.join(_nav_dir, 'yolo11x-seg.pt')
+        peanut_args.seg_model_wts = model_path
+        peanut_args._coco80_model_path = model_path
         peanut_args._coco80_conf = getattr(peanut_args, 'yolo11_conf', 0.15)
     elif seg_type == 'yolo26':
-        peanut_args._coco80_model_path = getattr(peanut_args, 'yolo26_model_path', 'yolo26x-seg.pt')
+        model_path = peanut_args.seg_model_wts
+        if not model_path.endswith('.pt'):
+            model_path = os.path.join(_nav_dir, 'yolo26x-seg.pt')
+        peanut_args.seg_model_wts = model_path
+        peanut_args._coco80_model_path = model_path
         peanut_args._coco80_conf = getattr(peanut_args, 'yolo26_conf', 0.08)
     elif seg_type in ('maskrcnn', 'maskrcnn_pretrained', 'cascade'):
         # Detectron2-based models — no YOLO-specific config needed
@@ -602,7 +628,7 @@ def run_coco80_replay(scene_dir, target_object, peanut_args, num_frames=None, fr
 
     scene_name = os.path.basename(scene_dir.rstrip("/"))
     out_dir = os.path.join(peanut_args.dump_location,
-                           f"coco80_replay_{scene_name}_{target_object}")
+                           f"coco80_replay_{scene_name}")
     os.makedirs(out_dir, exist_ok=True)
     peanut_args.dump_location = out_dir
     peanut_args.exp_name = f"coco80_{scene_name}"
@@ -722,6 +748,20 @@ def run_coco80_replay(scene_dir, target_object, peanut_args, num_frames=None, fr
             print(f"  [FP filter] Removed {len(removed_names)} outdoor categories: {', '.join(removed_names)}")
         else:
             print(f"  [FP filter] No outdoor false positives found.")
+
+    # ── Keep only MaskRCNN 9 categories ──
+    if maskrcnn_cats_only:
+        removed_names = []
+        for cat_i in range(n_sem):
+            if cat_i not in MASKRCNN_COCO_INDICES:
+                cat_cells = int((sem_crop[cat_i] > 0).sum())
+                if cat_cells > 0:
+                    removed_names.append(f"{COCO_80_NAMES[cat_i]}({cat_cells})")
+                sem_crop[cat_i] = 0
+        kept_names = [COCO_80_NAMES[i] for i in sorted(MASKRCNN_COCO_INDICES)]
+        print(f"  [MaskRCNN filter] Keeping only 9 categories: {', '.join(kept_names)}")
+        if removed_names:
+            print(f"  [MaskRCNN filter] Removed {len(removed_names)} non-MaskRCNN categories: {', '.join(removed_names)}")
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Per-cell winner: the category with the highest accumulated semantic
@@ -956,15 +996,41 @@ def run_coco80_replay(scene_dir, target_object, peanut_args, num_frames=None, fr
 #  CLI entry point
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# All known VLMaps scene directories (under /nav/vlmaps_data/)
+ALL_SCENES = [
+    "5LpN3gDmAk7_1",
+    "JmbYfDe2QKZ_1",
+    "JmbYfDe2QKZ_2",
+    "UwV83HsGsw3_1",
+    "Vt2qJdWjCF2_1",
+    "YmJkqBEsHnH_1",
+    "gTV8FGcVJC9_1",
+    "jh4fc5c5qoQ_1",
+    "mJXqzFtmKg4_1",
+    "ur6pFq6Qu1A_1",
+]
+
+
 def main():
-    """CLI entry point: parse scene_dir, target_object, filter flags, then run replay."""
+    """CLI entry point: parse scene_dir, target_object, filter flags, then run replay.
+
+    --scene_dir can be:
+      • A single scene path   (e.g. /nav/vlmaps_data/5LpN3gDmAk7_1)
+      • "all"                 → process every scene in ALL_SCENES list
+      • A comma-separated list of scene names
+        (e.g. "5LpN3gDmAk7_1,JmbYfDe2QKZ_1")
+    """
     parser = argparse.ArgumentParser(description="COCO-80 offline replay", add_help=False)
-    parser.add_argument("--scene_dir", type=str, required=True)
-    parser.add_argument("--target_object", type=str, default="chair")
+    parser.add_argument("--scene_dir", type=str, required=True,
+                        help='Scene path, "all", or comma-separated scene names')
+    parser.add_argument("--scene_base_dir", type=str, default="/nav/vlmaps_data",
+                        help="Base directory containing scene folders (default: /nav/vlmaps_data)")
     parser.add_argument("--num_frames", type=int, default=None)
     parser.add_argument("--frame_step", type=int, default=1)
     parser.add_argument("--filter_outdoor", type=int, default=0,
                         help="1 = suppress outdoor/impossible categories (train, airplane, etc.)")
+    parser.add_argument("--maskrcnn_cats_only", type=int, default=1,
+                        help="1 = keep only 9 MaskRCNN categories (chair,couch,plant,bed,table,toilet,tv,oven,sink)")
     parser.add_argument("--min_votes", type=int, default=3,
                         help="Min cross-frame votes to keep a cell label (default 3)")
     our_args, remaining = parser.parse_known_args()
@@ -972,15 +1038,84 @@ def main():
     sys.argv = [sys.argv[0]] + remaining
     peanut_args = get_args()
 
-    run_coco80_replay(
-        scene_dir=our_args.scene_dir,
-        target_object=our_args.target_object,
-        peanut_args=peanut_args,
-        num_frames=our_args.num_frames,
-        frame_step=our_args.frame_step,
-        filter_outdoor=bool(our_args.filter_outdoor),
-        min_votes=our_args.min_votes,
-    )
+    # ── Resolve scene list ──
+    scene_arg = our_args.scene_dir.strip()
+    base_dir = our_args.scene_base_dir
+
+    if scene_arg.lower() == "all":
+        # Process every scene in ALL_SCENES
+        scene_dirs = [os.path.join(base_dir, s) for s in ALL_SCENES]
+    elif "," in scene_arg:
+        # Comma-separated scene names
+        names = [n.strip() for n in scene_arg.split(",") if n.strip()]
+        scene_dirs = [os.path.join(base_dir, n) for n in names]
+    elif os.path.isdir(scene_arg):
+        # Single absolute/relative path
+        scene_dirs = [scene_arg]
+    else:
+        # Assume it's a scene name under base_dir
+        scene_dirs = [os.path.join(base_dir, scene_arg)]
+
+    # Validate
+    valid_scenes = []
+    for sd in scene_dirs:
+        if os.path.isdir(sd) and os.path.isdir(os.path.join(sd, "rgb")):
+            valid_scenes.append(sd)
+        else:
+            print(f"[WARNING] Skipping invalid scene: {sd}")
+
+    if not valid_scenes:
+        print("[ERROR] No valid scenes found!")
+        sys.exit(1)
+
+    print(f"\n{'#'*60}")
+    print(f"  Processing {len(valid_scenes)} scene(s)")
+    print(f"  Model: {peanut_args.seg_model_type}")
+    print(f"{'#'*60}\n")
+
+    # ── Process each scene ──
+    all_results = {}
+    for scene_idx, scene_dir in enumerate(valid_scenes):
+        scene_name = os.path.basename(scene_dir.rstrip("/"))
+        print(f"\n{'━'*60}")
+        print(f"  Scene {scene_idx+1}/{len(valid_scenes)}: {scene_name}")
+        print(f"{'━'*60}")
+
+        # Deep-copy peanut_args so each scene gets a clean state
+        scene_args = copy.deepcopy(peanut_args)
+
+        try:
+            detected, counts, out = run_coco80_replay(
+                scene_dir=scene_dir,
+                peanut_args=scene_args,
+                num_frames=our_args.num_frames,
+                frame_step=our_args.frame_step,
+                filter_outdoor=bool(our_args.filter_outdoor),
+                min_votes=our_args.min_votes,
+                maskrcnn_cats_only=bool(our_args.maskrcnn_cats_only),
+            )
+            all_results[scene_name] = {
+                "status": "OK",
+                "detected": len(detected),
+                "total_cells": sum(counts.values()),
+                "output": out,
+            }
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            all_results[scene_name] = {"status": f"FAILED: {e}"}
+            print(f"\n  [ERROR] Scene {scene_name} failed: {e}")
+
+    # ── Summary ──
+    print(f"\n\n{'='*60}")
+    print(f"  BATCH SUMMARY — {len(valid_scenes)} scenes")
+    print(f"{'='*60}")
+    for name, res in all_results.items():
+        if res["status"] == "OK":
+            print(f"  ✓ {name:25s}  {res['detected']:2d} cats  {res['total_cells']:7,} cells")
+        else:
+            print(f"  ✗ {name:25s}  {res['status']}")
+    print(f"{'='*60}\n")
 
 
 if __name__ == "__main__":
