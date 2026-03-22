@@ -12,6 +12,12 @@ nav/vlmaps_data/
 nav/test_rgb.png
 nav/test_rgb2.png
 nav/habitat-challenge-data
+.github
+.planning
+koray
+koray_bildiri
+bildiri
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

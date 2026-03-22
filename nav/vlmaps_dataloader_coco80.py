@@ -681,17 +681,13 @@ def run_coco80_replay(scene_dir, target_object, peanut_args, num_frames=None, fr
     agent_state = agent.agent_states
     agent_state.full_map[:, agent_state.lmb[0]:agent_state.lmb[1],
                             agent_state.lmb[2]:agent_state.lmb[3]] = agent_state.local_map
-    agent_state.full_vote_map[:, agent_state.lmb[0]:agent_state.lmb[1],
-                                agent_state.lmb[2]:agent_state.lmb[3]] = agent_state.local_vote_map
 
     full_map = agent_state.full_map.cpu().numpy()
-    full_vote = agent_state.full_vote_map.cpu().numpy()  # (num_sem, H, W)
     n_sem = 80  # we use 80 COCO categories
     obstacle_map = full_map[0]
     explored_map = full_map[1]
     trajectory_map = full_map[3]
     semantic_channels = full_map[4:4+n_sem]  # (80, H, W)
-    vote_channels = full_vote[:n_sem]  # (80, H, W) — vote counts per category
 
     # Crop to explored region
     explored_mask = explored_map > 0.5
@@ -713,16 +709,14 @@ def run_coco80_replay(scene_dir, target_object, peanut_args, num_frames=None, fr
     explored_crop = explored_map[rmin:rmax, cmin:cmax]
     traj_crop = trajectory_map[rmin:rmax, cmin:cmax]
     sem_crop = semantic_channels[:, rmin:rmax, cmin:cmax]
-    vote_crop = vote_channels[:, rmin:rmax, cmin:cmax]   # (80, h, w)
 
     # ── Filter outdoor / impossible categories ──
     if filter_outdoor:
         removed_names = []
         for fp_idx in sorted(OUTDOOR_FP_INDICES):
-            fp_cells = int((vote_crop[fp_idx] > 0).sum())
+            fp_cells = int((sem_crop[fp_idx] > 0).sum())
             if fp_cells > 0:
                 removed_names.append(f"{COCO_80_NAMES[fp_idx]}({fp_cells})")
-            vote_crop[fp_idx] = 0
             sem_crop[fp_idx] = 0
         if removed_names:
             print(f"  [FP filter] Removed {len(removed_names)} outdoor categories: {', '.join(removed_names)}")
@@ -730,36 +724,30 @@ def run_coco80_replay(scene_dir, target_object, peanut_args, num_frames=None, fr
             print(f"  [FP filter] No outdoor false positives found.")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Per-orit:y-veewinningsct-ogory'e vosesciunt must mget:min_s
-   max_vtes = vote_cop.max(axis=0)  # (h, w) —mx vote cout each cll
-    #  Form =  ax_votese>acmin_h ces   # (h, w)
-
-    beforelfilte, = int((max_v tes > 0)hsue())
-     fter_filter = intahbs_sem.sum())
-    print(f"  [mln_vote i{min_votes}] {before_filter} cells had any vote, "
-       tecf"{after_filter}asurvivedeg{before_filter - after_filter}yremoved)"that was observed the most
-    #  times across all frames (highest vote count). Ties broken by the
-    #  accumulated semantic value (area-based, from get_prediction).
+    #  Per-cell winner: the category with the highest accumulated semantic
+    #  value (area-based, from get_prediction) wins each cell.
+    #  A minimum threshold filters out noise.
     # ══════════════════════════════════════════════════════════════════════════
 
     h, w = sem_crop.shape[1], sem_crop.shape[2]
 
-    # Per-cell: the winning category's vote count must meet min_votes
-    max_votes = vote_crop.max(axis=0)  # (h, w) — max vote count at each cell
-    has_sem = max_votes >= min_votes   # (h, w)
+    # Per-cell: max accumulated semantic value across all categories
+    sem_threshold = 0.05  # minimum accumulated value to keep
+    max_sem_val = sem_crop.max(axis=0)  # (h, w)
+    has_sem = max_sem_val >= sem_threshold   # (h, w)
 
-    before_filter = int((max_votes > 0).sum())
+    before_filter = int((max_sem_val > 0).sum())
     after_filter = int(has_sem.sum())
-    print(f"  [min_votes={min_votes}] {before_filter} cells had any vote, "
+    print(f"  [threshold={sem_threshold}] {before_filter} cells had any semantic, "
           f"{after_filter} survived ({before_filter - after_filter} removed)")
 
-    # Majority vote: argmax of vote counts → winning category per cell
-    vote_winner = np.argmax(vote_crop, axis=0)  # (h, w) — category index
+    # Winner: argmax of accumulated semantic values → winning category per cell
+    sem_winner = np.argmax(sem_crop, axis=0)  # (h, w) — category index
 
-    # Build clean single-label semantic map from vote winner (vectorized)
+    # Build clean single-label semantic map from winner (vectorized)
     sem_voted = np.zeros_like(sem_crop)   # (80, h, w)
     rows_sem, cols_sem = np.where(has_sem)
-    cats_sem = vote_winner[rows_sem, cols_sem]
+    cats_sem = sem_winner[rows_sem, cols_sem]
     sem_voted[cats_sem, rows_sem, cols_sem] = 1.0
 
     # ── Spatial mode filter for neighborhood consistency ──
@@ -769,7 +757,7 @@ def run_coco80_replay(scene_dir, target_object, peanut_args, num_frames=None, fr
 
     # Convert to label map: -1 = no label, 0..79 = category
     label_map = np.full((h, w), -1, dtype=np.int32)
-    label_map[has_sem] = vote_winner[has_sem]
+    label_map[has_sem] = sem_winner[has_sem]
 
     def _spatial_mode(values):
         """Return the most common non-negative label in the window."""
@@ -797,17 +785,15 @@ def run_coco80_replay(scene_dir, target_object, peanut_args, num_frames=None, fr
     # Use the voted + smoothed result for visualization
     sem_crop = sem_final
 
-    print(f"\n  Majority-vote post-processing:")
+    print(f"\n  Post-processing:")
     print(f"    Cells with any semantic: {int(has_sem.sum())}")
     print(f"    After spatial smoothing (5×5 mode filter): "
           f"{int((label_smoothed >= 0).sum())} cells")
 
     # Save numpy arrays
     np.save(os.path.join(out_dir, "full_map.npy"), full_map)
-    np.save(os.path.join(out_dir, "vote_map_coco80.npy"), vote_crop)
     np.save(os.path.join(out_dir, "semantic_map_coco80.npy"), sem_crop)
     print(f"  Saved full_map: shape={full_map.shape}")
-    print(f"  Saved vote_map_coco80: shape={vote_crop.shape}")
     print(f"  Saved semantic_map_coco80: shape={sem_crop.shape}")
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -858,7 +844,7 @@ def run_coco80_replay(scene_dir, target_object, peanut_args, num_frames=None, fr
     ax_map.imshow(canvas, interpolation='nearest')
     ax_map.set_title(f"Semantic Map — {scene_name}\n"
                      f"{seg_type.upper()} | {len(frame_indices)} frames | "
-                     f"Majority-vote + 5×5 spatial | {n_detected} detected | {total_sem:,} cells",
+                     f"Argmax + 5×5 spatial | {n_detected} detected | {total_sem:,} cells",
                      fontsize=13, fontweight='bold')
     ax_map.set_aspect('equal')
     ax_map.axis('off')
@@ -963,9 +949,7 @@ def run_coco80_replay(scene_dir, target_object, peanut_args, num_frames=None, fr
     print(f"    STOP suppressed: {stop_count} times")
     print(f"\n  Output directory: {out_dir}")
 
-    return detected_cats, cat_cell_counts, out_dir.)")
-    parseradd_argument("--min_votes", type=int, default=3,
-                        help="Min cross-frame votes to keep a cell label (default 3
+    return detected_cats, cat_cell_counts, out_dir
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
