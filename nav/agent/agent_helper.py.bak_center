@@ -760,10 +760,6 @@ class Agent_Helper:
             cv2.putText(self.vis_image, name, (x + box_sz + 4, y + box_sz - 1),
                         font_leg, font_scale_leg, (30, 30, 30), thick_leg, cv2.LINE_AA)
 
-        # Crop out blank right panel if no prediction data
-        if self.agent_states.target_pred is None:
-            self.vis_image = self.vis_image[:, :1165]
-
         if args.visualize == 1:
             # Displaying the image
             cv2.imshow("Thread {}".format(self.rank), self.vis_image)

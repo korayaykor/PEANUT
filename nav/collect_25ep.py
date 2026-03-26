@@ -48,8 +48,13 @@ MAP_LAYERS = [
     (2, "Explored"),
 ]
 
+# Overlay colors (RGB)
+TRAJECTORY_COLOR = (0, 180, 255)    # Cyan-blue for agent path
+AGENT_POS_COLOR = (0, 220, 0)      # Green for current agent position
+GOAL_MARKER_COLOR = (255, 50, 50)  # Red for goal object location
 
-def add_legend(img_rgb, detected_indices):
+
+def add_legend(img_rgb, detected_indices, extra_entries=None):
     """Add a semantic legend bar below the image."""
     color_pal = [int(x * 255.) for x in color_palette]
     H, W = img_rgb.shape[:2]
@@ -63,6 +68,8 @@ def add_legend(img_rgb, detected_indices):
         r, g, b = color_pal[pal_idx*3], color_pal[pal_idx*3+1], color_pal[pal_idx*3+2]
         marker = " *" if (cat_i + 1) in detected_indices else ""
         entries.append(((r, g, b), cat_name + marker))
+    if extra_entries:
+        entries.extend(extra_entries)
 
     num_cols = 7
     num_rows = (len(entries) + num_cols - 1) // num_cols
@@ -146,13 +153,45 @@ def save_semantic_map(agent, ep_idx, scene_short, target_name, save_dir):
     sem_vis.putpalette(color_pal)
     sem_vis.putdata(vis_map.flatten().astype(np.uint8))
     sem_vis = sem_vis.convert("RGB")
-    sem_vis = np.flipud(np.array(sem_vis))
-    
+    sem_vis = np.array(sem_vis)
+
+    # Overlay agent trajectory (channel 3)
+    traj_mask = full_map[3] > 0.5
+    sem_vis[traj_mask] = TRAJECTORY_COLOR
+
+    # Overlay agent current position (channel 2) on top of trajectory
+    pos_mask = full_map[2] > 0.5
+    sem_vis[pos_mask] = AGENT_POS_COLOR
+
+    # Flip vertically for display
+    sem_vis = np.flipud(sem_vis).copy()
+
+    # Build extra legend entries
+    extra_legend = [
+        (TRAJECTORY_COLOR, "Agent Trajectory"),
+        (AGENT_POS_COLOR, "Agent Position"),
+    ]
+
+    # Mark goal object location on the map
+    goal_cat = state.goal_cat  # 0-indexed category
+    if 0 <= goal_cat < len(CATEGORY_NAMES):
+        goal_pixels = (sem_label == (goal_cat + 1))
+        if goal_pixels.any():
+            rows_g, cols_g = np.where(goal_pixels)
+            cy = int(np.mean(rows_g))
+            cx = int(np.mean(cols_g))
+            # Flip row coordinate to match flipped image
+            cy_flip = sem_vis.shape[0] - 1 - cy
+            # Draw target marker (circle with dot)
+            cv2.circle(sem_vis, (cx, cy_flip), 15, GOAL_MARKER_COLOR, 2)
+            cv2.circle(sem_vis, (cx, cy_flip), 6, GOAL_MARKER_COLOR, -1)
+        extra_legend.append((GOAL_MARKER_COLOR, "Goal: " + target_name))
+
     # Find which categories are detected
     detected_cats = set(np.unique(sem_label)) - {0}
 
     # Add legend to full map
-    sem_vis_with_legend = add_legend(sem_vis, detected_cats)
+    sem_vis_with_legend = add_legend(sem_vis, detected_cats, extra_legend)
     cv2.imwrite(
         os.path.join(save_dir, f"{prefix}_semmap.png"),
         sem_vis_with_legend[:, :, ::-1]  # RGB -> BGR for cv2
@@ -173,7 +212,7 @@ def save_semantic_map(agent, ep_idx, scene_short, target_name, save_dir):
         cmax = min(full_map.shape[2] - 1, cmax + pad)
         
         cropped = sem_vis[rmin:rmax+1, cmin:cmax+1]
-        cropped_with_legend = add_legend(cropped, detected_cats)
+        cropped_with_legend = add_legend(cropped, detected_cats, extra_legend)
         cv2.imwrite(
             os.path.join(save_dir, f"{prefix}_semmap_cropped.png"),
             cropped_with_legend[:, :, ::-1]

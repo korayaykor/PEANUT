@@ -1,0 +1,389 @@
+"""
+Standard HM3D ObjectNav evaluation — full val set (2000 episodes).
+
+Consistent with the 2022 Habitat ObjectNav Challenge:
+  - 6 goal categories (chair, sofa, plant, bed, toilet, tv_monitor)
+  - 20 val scenes, 2000 episodes
+  - RGB-D 640x480, HFOV 79 degrees
+  - Step distance 0.25m, turn angle 30 degrees
+  - MAX_EPISODE_STEPS 500
+
+Outputs:
+  - Per-episode JSONL results
+  - Per-category metric breakdown
+  - Summary JSON with overall + per-category metrics
+  - Semantic map PNGs (cropped) for sampled episodes
+
+Usage (inside peanut_v2 container):
+  python /nav/objectnav_eval.py \
+      --seg_model_type yolo \
+      --seg_model_wts /nav/yolov8x-seg.pt \
+      --exp_name yolov8_hm3d_val \
+      --dump_location /data/objectnav_hm3d_val/ \
+      -v 0 --sem_gpu_id 0 --evaluation local
+"""
+
+import os
+import sys
+import time
+import json
+import numpy as np
+import cv2
+import habitat
+import torch
+from PIL import Image
+from collections import defaultdict
+
+from arguments import get_args
+from habitat.core.env import Env
+from constants import hm3d_names, color_palette
+from agent.peanut_agent import PEANUT_Agent
+
+
+# PEANUT category names for semantic map channels 4..13
+CATEGORY_NAMES = [
+    'chair', 'sofa', 'plant', 'bed', 'toilet',
+    'tv_monitor', 'fireplace', 'bathtub', 'mirror', 'other'
+]
+
+# 6 HM3D ObjectNav goal categories
+GOAL_CATEGORIES = ['chair', 'sofa', 'plant', 'bed', 'toilet', 'tv_monitor']
+
+# Map layer legends
+MAP_LAYERS = [
+    (0, "Unknown"),
+    (1, "Obstacle"),
+    (2, "Explored"),
+]
+
+# Overlay colors (RGB)
+TRAJECTORY_COLOR = (0, 180, 255)
+AGENT_POS_COLOR = (0, 220, 0)
+GOAL_MARKER_COLOR = (255, 50, 50)
+
+# Save semantic map PNGs every N episodes (to limit disk usage)
+SAVE_MAP_EVERY = 50
+
+_log_fh = None
+
+def _init_log(path):
+    global _log_fh
+    _log_fh = open(path, 'w', buffering=1)  # line-buffered
+
+def log(msg=''):
+    if _log_fh:
+        _log_fh.write(msg + '\n')
+        _log_fh.flush()
+
+
+def add_legend(img_rgb, detected_indices, extra_entries=None):
+    """Add a semantic legend bar below the image."""
+    color_pal = [int(x * 255.) for x in color_palette]
+    H, W = img_rgb.shape[:2]
+
+    entries = []
+    for idx, label in MAP_LAYERS:
+        r, g, b = color_pal[idx*3], color_pal[idx*3+1], color_pal[idx*3+2]
+        entries.append(((r, g, b), label))
+    for cat_i, cat_name in enumerate(CATEGORY_NAMES):
+        pal_idx = cat_i + 5
+        r, g, b = color_pal[pal_idx*3], color_pal[pal_idx*3+1], color_pal[pal_idx*3+2]
+        marker = " *" if (cat_i + 1) in detected_indices else ""
+        entries.append(((r, g, b), cat_name + marker))
+    if extra_entries:
+        entries.extend(extra_entries)
+
+    num_cols = 7
+    num_rows = (len(entries) + num_cols - 1) // num_cols
+    row_h = 30
+    col_w = max(W // num_cols, 160)
+    legend_w = max(W, col_w * num_cols)
+    legend_h = num_rows * row_h + 10
+    swatch_size = 16
+
+    legend = np.ones((legend_h, legend_w, 3), dtype=np.uint8) * 255
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.45
+    font_thickness = 1
+
+    for i, (color_rgb, label) in enumerate(entries):
+        row = i // num_cols
+        col = i % num_cols
+        x = col * col_w + 8
+        y = row * row_h + 8
+        cv2.rectangle(legend, (x, y), (x + swatch_size, y + swatch_size),
+                      (color_rgb[2], color_rgb[1], color_rgb[0]), -1)
+        cv2.rectangle(legend, (x, y), (x + swatch_size, y + swatch_size),
+                      (0, 0, 0), 1)
+        cv2.putText(legend, label, (x + swatch_size + 5, y + swatch_size - 2),
+                    font, font_scale, (0, 0, 0), font_thickness, cv2.LINE_AA)
+
+    if legend_w != W:
+        center_pad = (legend_w - W) // 2
+        padded = np.ones((H, legend_w, 3), dtype=np.uint8) * 255
+        padded[:, center_pad:center_pad+W] = img_rgb
+        img_rgb = padded
+
+    sep = np.ones((2, legend_w, 3), dtype=np.uint8) * 128
+    return np.vstack([img_rgb, sep, legend])
+
+
+def save_semantic_map(agent, ep_idx, scene_short, target_name, save_dir):
+    """Save cropped semantic map PNG with trajectory, goal marker, and legend."""
+    os.makedirs(save_dir, exist_ok=True)
+
+    helper = agent.agent_helper
+    state = helper.agent_states
+    full_map = state.full_map.cpu().numpy()
+
+    prefix = f"ep{ep_idx:04d}_{scene_short}_{target_name}"
+
+    num_sem = full_map.shape[0] - 4
+    sem_channels = full_map[4:4+num_sem]
+    sem_max = sem_channels.max(axis=0)
+    sem_label = sem_channels.argmax(axis=0) + 1
+    sem_label[sem_max < 0.01] = 0
+
+    obstacle = (full_map[0] > 0.5).astype(np.uint8)
+    explored = (full_map[1] > 0.5).astype(np.uint8)
+
+    vis_map = np.zeros_like(sem_label, dtype=np.uint8)
+    vis_map[explored == 1] = 2
+    vis_map[obstacle == 1] = 1
+    vis_map[sem_label > 0] = sem_label[sem_label > 0] + 4
+
+    color_pal = [int(x * 255.) for x in color_palette]
+    sem_vis = Image.new("P", (vis_map.shape[1], vis_map.shape[0]))
+    sem_vis.putpalette(color_pal)
+    sem_vis.putdata(vis_map.flatten().astype(np.uint8))
+    sem_vis = np.array(sem_vis.convert("RGB"))
+
+    # Overlay trajectory and position
+    sem_vis[full_map[3] > 0.5] = TRAJECTORY_COLOR
+    sem_vis[full_map[2] > 0.5] = AGENT_POS_COLOR
+    sem_vis = np.flipud(sem_vis).copy()
+
+    extra_legend = [
+        (TRAJECTORY_COLOR, "Agent Trajectory"),
+        (AGENT_POS_COLOR, "Agent Position"),
+    ]
+
+    # Goal marker
+    goal_cat = state.goal_cat
+    if 0 <= goal_cat < len(CATEGORY_NAMES):
+        goal_pixels = (sem_label == (goal_cat + 1))
+        if goal_pixels.any():
+            rows_g, cols_g = np.where(goal_pixels)
+            cy_flip = sem_vis.shape[0] - 1 - int(np.mean(rows_g))
+            cx = int(np.mean(cols_g))
+            cv2.circle(sem_vis, (cx, cy_flip), 15, GOAL_MARKER_COLOR, 2)
+            cv2.circle(sem_vis, (cx, cy_flip), 6, GOAL_MARKER_COLOR, -1)
+        extra_legend.append((GOAL_MARKER_COLOR, "Goal: " + target_name))
+
+    detected_cats = set(np.unique(sem_label)) - {0}
+
+    # Save cropped version only (to save disk)
+    explored_full = full_map[1] > 0.01
+    rows = np.any(explored_full, axis=1)
+    cols = np.any(explored_full, axis=0)
+    if rows.any() and cols.any():
+        rmin, rmax = np.where(rows)[0][[0, -1]]
+        cmin, cmax = np.where(cols)[0][[0, -1]]
+        pad = 20
+        rmin = max(0, rmin - pad)
+        rmax = min(full_map.shape[1] - 1, rmax + pad)
+        cmin = max(0, cmin - pad)
+        cmax = min(full_map.shape[2] - 1, cmax + pad)
+        cropped = sem_vis[rmin:rmax+1, cmin:cmax+1]
+    else:
+        cropped = sem_vis
+
+    cropped_with_legend = add_legend(cropped, detected_cats, extra_legend)
+    cv2.imwrite(
+        os.path.join(save_dir, f"{prefix}_semmap.png"),
+        cropped_with_legend[:, :, ::-1]
+    )
+
+
+def main():
+    args = get_args()
+    args.only_explore = 0
+
+    config_paths = os.environ["CHALLENGE_CONFIG_FILE"]
+    config = habitat.get_config(config_paths)
+    config.defrost()
+    config.SEED = 100
+    config.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = args.sem_gpu_id
+    config.ENVIRONMENT.ITERATOR_OPTIONS.MAX_SCENE_REPEAT_STEPS = -1
+    config.ENVIRONMENT.ITERATOR_OPTIONS.MAX_SCENE_REPEAT_EPISODES = 1
+    config.DATASET.SPLIT = 'val'
+    config.freeze()
+
+    hab_env = Env(config=config)
+    nav_agent = PEANUT_Agent(args=args, task_config=config)
+
+    num_episodes = len(hab_env.episodes)
+    start = args.start_ep
+    end = args.end_ep if args.end_ep > 0 else num_episodes
+    end = min(end, num_episodes)
+
+    os.makedirs(args.dump_location, exist_ok=True)
+    log_file = os.path.join(args.dump_location, f'{args.exp_name}.log')
+    _init_log(log_file)
+
+    log("=" * 70)
+    log(f"HM3D ObjectNav Full Val Evaluation: {args.exp_name}")
+    log(f"Model: {args.seg_model_type} | Weights: {args.seg_model_wts}")
+    log(f"Episodes: {start} -> {end} (total {end - start})")
+    log(f"Dump: {args.dump_location}")
+    log(f"Semantic maps saved every {SAVE_MAP_EVERY} episodes")
+    log("=" * 70)
+
+    # Prepare output
+    results_file = os.path.join(args.dump_location, f"{args.exp_name}_results.jsonl")
+
+    open(results_file, "w").close()
+
+    # Per-category tracking
+    cat_metrics = defaultdict(lambda: {'success': [], 'spl': [], 'softspl': [], 'dtg': []})
+    all_sucs, all_spls, all_softspls = [], [], []
+    all_dists, all_ep_lens, all_times = [], [], []
+
+    eval_start = time.time()
+    ep_i = 0
+
+    while ep_i < min(num_episodes, end):
+        observations = hab_env.reset()
+        nav_agent.reset()
+
+        if ep_i >= start and ep_i < end:
+            target_name = hm3d_names[observations['objectgoal'][0]]
+            scene_id = hab_env._current_episode.scene_id
+            scene_short = scene_id.split('/')[-2] if '/' in scene_id else scene_id
+
+            step_i = 0
+            ep_start = time.time()
+
+            while not hab_env.episode_over:
+                action = nav_agent.act(observations)
+                observations = hab_env.step(action)
+                step_i += 1
+
+            ep_time = time.time() - ep_start
+            metrics = hab_env.get_metrics()
+
+            suc = metrics.get('success', 0.0)
+            spl = metrics.get('spl', 0.0)
+            sspl = metrics.get('softspl', 0.0)
+            dtg = metrics.get('distance_to_goal', -1)
+
+            all_sucs.append(suc)
+            all_spls.append(spl)
+            all_softspls.append(sspl)
+            all_dists.append(dtg)
+            all_ep_lens.append(step_i)
+            all_times.append(ep_time)
+
+            cat_metrics[target_name]['success'].append(suc)
+            cat_metrics[target_name]['spl'].append(spl)
+            cat_metrics[target_name]['softspl'].append(sspl)
+            cat_metrics[target_name]['dtg'].append(dtg)
+
+            n = len(all_sucs)
+            elapsed = time.time() - eval_start
+            eta = (elapsed / n) * (end - start - n) if n > 0 else 0
+            status = "OK" if suc > 0 else "--"
+
+            log(f'[{n}/{end-start}] ep{ep_i} {status} {target_name:12s} '
+                  f'steps={step_i:3d} dist={dtg:5.2f} spl={spl:.3f} '
+                  f't={ep_time:.1f}s avg_t={np.mean(all_times):.1f}s '
+                  f'| SR={np.mean(all_sucs)*100:5.1f}% SPL={np.mean(all_spls)*100:5.1f}% '
+                  f'| ETA {eta/60:.0f}min')
+        
+            # Save semantic maps for first 25 episodes
+            if n <= 25:
+                map_dir = os.path.join(args.dump_location, 'maps', args.exp_name)
+                save_semantic_map(nav_agent, ep_i, scene_short, target_name, map_dir)
+                log(f'  -> saved semantic map to {map_dir}')
+
+            # Write JSONL record
+            record = {
+                'episode': ep_i,
+                'scene_id': scene_id,
+                'scene_short': scene_short,
+                'target': target_name,
+                'episode_length': step_i,
+                'time': round(ep_time, 2),
+                'distance_to_goal': round(dtg, 4),
+                'success': suc,
+                'spl': round(spl, 4),
+                'softspl': round(sspl, 4),
+            }
+            with open(results_file, 'a') as f:
+                f.write(json.dumps(record) + "\n")
+
+        ep_i += 1
+
+    # ---- Final Report ----
+    total_time = time.time() - eval_start
+    n = len(all_sucs)
+
+    log("\n" + "=" * 70)
+    log(f"FINAL RESULTS: {args.exp_name}")
+    log(f"Model: {args.seg_model_type} | Episodes: {n}")
+    log("-" * 70)
+    log(f"  Success Rate (SR):   {np.mean(all_sucs)*100:.1f}%")
+    log(f"  SPL:                 {np.mean(all_spls)*100:.1f}%")
+    log(f"  Soft SPL:            {np.mean(all_softspls)*100:.1f}%")
+    log(f"  Avg Dist to Goal:    {np.mean(all_dists):.2f}m")
+    log(f"  Avg Episode Length:  {np.mean(all_ep_lens):.0f} steps")
+    log(f"  Total Time:          {total_time/60:.1f}min ({total_time/3600:.1f}h)")
+    log("-" * 70)
+    log(f"  {'Category':<14s}  {'Count':>5s}  {'SR':>6s}  {'SPL':>6s}  {'SoftSPL':>7s}  {'AvgDist':>7s}")
+    log("-" * 70)
+    per_cat_summary = {}
+    for cat in GOAL_CATEGORIES:
+        cm = cat_metrics[cat]
+        cnt = len(cm['success'])
+        if cnt > 0:
+            sr = np.mean(cm['success'])*100
+            sp = np.mean(cm['spl'])*100
+            ss = np.mean(cm['softspl'])*100
+            ad = np.mean(cm['dtg'])
+            log(f"  {cat:<14s}  {cnt:5d}  {sr:5.1f}%  {sp:5.1f}%  {ss:6.1f}%  {ad:6.2f}m")
+            per_cat_summary[cat] = {
+                'count': cnt,
+                'success_rate': round(sr/100, 4),
+                'spl': round(sp/100, 4),
+                'softspl': round(ss/100, 4),
+                'avg_dist': round(ad, 4),
+            }
+    log("=" * 70)
+
+    # Save summary JSON
+    summary = {
+        'exp_name': args.exp_name,
+        'seg_model_type': args.seg_model_type,
+        'seg_model_wts': args.seg_model_wts,
+        'num_episodes': n,
+        'start_ep': start,
+        'end_ep': end,
+        'success_rate': round(float(np.mean(all_sucs)), 4),
+        'spl': round(float(np.mean(all_spls)), 4),
+        'softspl': round(float(np.mean(all_softspls)), 4),
+        'avg_distance_to_goal': round(float(np.mean(all_dists)), 4),
+        'avg_episode_length': round(float(np.mean(all_ep_lens)), 1),
+        'total_time_seconds': round(total_time, 1),
+        'per_category': per_cat_summary,
+    }
+    summary_file = os.path.join(args.dump_location, f"{args.exp_name}_summary.json")
+    with open(summary_file, 'w') as f:
+        json.dump(summary, f, indent=2)
+    log(f"Summary: {summary_file}")
+    log(f"Results: {results_file}")
+
+
+
+if __name__ == "__main__":
+    main()

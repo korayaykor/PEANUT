@@ -557,7 +557,108 @@ ACTION_NAMES = {0: "STOP", 1: "MOVE_FORWARD", 2: "TURN_LEFT", 3: "TURN_RIGHT"}
 #  Main offline replay with 80 COCO categories
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_coco80_replay(scene_dir, peanut_args, num_frames=None, frame_step=1, filter_outdoor=False, min_votes=3, maskrcnn_cats_only=True):
+# ══════════════════════════════════════════════════════════════════════════════
+#  Mask overlay visualization helper
+# ══════════════════════════════════════════════════════════════════════════════
+
+def draw_mask_overlay(rgb_bgr, sem_pred, coco_names, out_path, step_i, seg_type,
+                      alpha=0.45):
+    """Draw colored mask overlays with category labels on an RGB image and save.
+    
+    Args:
+        rgb_bgr:    (H, W, 3) BGR image
+        sem_pred:   (H, W, N+1) semantic prediction array (values > 0.5 = mask)
+        coco_names: list of 80 COCO category names
+        out_path:   path to save the annotated image
+        step_i:     current step number (for title)
+        seg_type:   model name string
+        alpha:      mask transparency (0=invisible, 1=opaque)
+    """
+    vis = rgb_bgr.copy()
+    H, W = vis.shape[:2]
+    
+    # Generate distinct colors for up to 80 categories using HSV
+    n_total = min(sem_pred.shape[2] - 1, 80)
+    colors = []
+    for i in range(80):
+        hue = int(i * 180 / 80) % 180
+        sat = 200 + (i % 3) * 25
+        val = 200 + (i % 2) * 55
+        bgr = cv2.cvtColor(np.array([[[hue, sat, val]]], dtype=np.uint8), cv2.COLOR_HSV2BGR)[0][0]
+        colors.append(tuple(int(c) for c in bgr))
+    
+    detected_cats = []
+    
+    for cat_i in range(n_total):
+        mask = sem_pred[:, :, cat_i] > 0.5
+        if not np.any(mask):
+            continue
+        
+        area = int(mask.sum())
+        cat_name = coco_names[cat_i] if cat_i < len(coco_names) else f"cat{cat_i}"
+        detected_cats.append((cat_name, area, cat_i))
+        
+        color = np.array(colors[cat_i], dtype=np.uint8)
+        vis[mask] = ((1 - alpha) * vis[mask] + alpha * color).astype(np.uint8)
+        
+        # Draw contour
+        contours, _ = cv2.findContours(
+            mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(vis, contours, -1, colors[cat_i], 2)
+        
+        # Label at centroid of largest contour
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            M = cv2.moments(largest)
+            if M['m00'] > 0:
+                cx = int(M['m10'] / M['m00'])
+                cy = int(M['m01'] / M['m00'])
+            else:
+                x, y, w, h = cv2.boundingRect(largest)
+                cx, cy = x + w // 2, y + h // 2
+            
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
+            thickness = 1
+            label_text = f"{cat_name} ({area})"
+            (tw, th), baseline = cv2.getTextSize(label_text, font, font_scale, thickness)
+            
+            # Background rectangle
+            cv2.rectangle(vis,
+                          (cx - tw // 2 - 2, cy - th - 4),
+                          (cx + tw // 2 + 2, cy + 4),
+                          colors[cat_i], -1)
+            cv2.putText(vis, label_text,
+                        (cx - tw // 2, cy),
+                        font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+    
+    # Title bar at top
+    title = f"Step {step_i} | {seg_type} | {len(detected_cats)} objects detected"
+    cv2.rectangle(vis, (0, 0), (W, 30), (40, 40, 40), -1)
+    cv2.putText(vis, title, (8, 22),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+
+    # Legend panel (bottom-left)
+    if detected_cats:
+        detected_cats.sort(key=lambda x: -x[1])  # sort by area descending
+        legend_h = min(len(detected_cats), 12) * 20 + 10
+        legend_w = 220
+        ly = H - legend_h - 5
+        cv2.rectangle(vis, (5, ly), (5 + legend_w, H - 5), (40, 40, 40), -1)
+        cv2.rectangle(vis, (5, ly), (5 + legend_w, H - 5), (180, 180, 180), 1)
+        for li, (cname, carea, cidx) in enumerate(detected_cats[:12]):
+            yy = ly + 18 + li * 20
+            cv2.rectangle(vis, (10, yy - 12), (24, yy), colors[cidx], -1)
+            cv2.putText(vis, f"{cname}: {carea}px",
+                        (28, yy - 1), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                        (255, 255, 255), 1, cv2.LINE_AA)
+    
+    cv2.imwrite(out_path, vis)
+    return len(detected_cats)
+
+
+
+def run_coco80_replay(scene_dir, peanut_args, num_frames=None, frame_step=1, filter_outdoor=False, min_votes=3, maskrcnn_cats_only=True, save_vis_frames=False, vis_frame_step=50):
     """Replay pre-recorded frames with ALL 80 COCO categories in the semantic map.
 
     Processes each frame through the chosen segmentation model (YOLO/MaskRCNN/Cascade),
@@ -693,6 +794,19 @@ def run_coco80_replay(scene_dir, peanut_args, num_frames=None, frame_step=1, fil
             sys.stdout.flush()
 
         results.append({"step": step_i, "frame_idx": fidx, "action": act_id, "action_name": act_name})
+
+        # Save annotated frame with mask overlay
+        if save_vis_frames and (step_i % vis_frame_step == 0):
+            vis_dir = os.path.join(out_dir, "vis_frames")
+            os.makedirs(vis_dir, exist_ok=True)
+            sem_pred = agent.agent_helper.seg_model.get_prediction(rgb[:, :, ::-1])[0]
+            if isinstance(sem_pred, torch.Tensor):
+                sem_pred = sem_pred.cpu().numpy()
+            vis_path = os.path.join(vis_dir, f"frame_{step_i:05d}.png")
+            n_det = draw_mask_overlay(rgb[:, :, ::-1], sem_pred, COCO_80_NAMES,
+                                      vis_path, step_i, seg_type)
+            if step_i % (vis_frame_step * 5) == 0:
+                print(f"    [vis] Saved {vis_path} ({n_det} objects)")
 
     elapsed = time.time() - t_start
     print(f"\n{'='*60}")
@@ -1033,6 +1147,10 @@ def main():
                         help="1 = keep only 9 MaskRCNN categories (chair,couch,plant,bed,table,toilet,tv,oven,sink)")
     parser.add_argument("--min_votes", type=int, default=3,
                         help="Min cross-frame votes to keep a cell label (default 3)")
+    parser.add_argument("--save_vis_frames", type=int, default=0,
+                        help="1 = save RGB frames with mask overlay + labels")
+    parser.add_argument("--vis_frame_step", type=int, default=50,
+                        help="Save a vis frame every N steps (default 50)")
     our_args, remaining = parser.parse_known_args()
 
     sys.argv = [sys.argv[0]] + remaining
@@ -1093,6 +1211,8 @@ def main():
                 filter_outdoor=bool(our_args.filter_outdoor),
                 min_votes=our_args.min_votes,
                 maskrcnn_cats_only=bool(our_args.maskrcnn_cats_only),
+                save_vis_frames=bool(our_args.save_vis_frames),
+                vis_frame_step=our_args.vis_frame_step,
             )
             all_results[scene_name] = {
                 "status": "OK",
